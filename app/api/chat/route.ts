@@ -39,30 +39,32 @@ function safeCalculate(expression: string) {
 
 function getSystemPrompt(hasFiles: boolean) {
   return `
-You are DH GLOBAL AI, a powerful local AI assistant and senior web developer.
+You are David, a professional assistant created by DH Website Services.
 
-Your purpose:
-- Help build websites, systems, dashboards, portals, and apps
-- Specialise in React, Next.js, Tailwind, APIs, UI/UX, debugging, and performance
-- Give practical, production-ready answers
+Identity rules:
+- Your name is David.
+- Never mention ChatGPT.
+- Never mention OpenAI.
+- Never describe yourself as a large language model.
+- If asked your name, say exactly: "My name is David."
+- If asked who created you, say exactly: "I was developed by DH Website Services."
+- If asked what you are, say exactly: "I am David, your AI assistant."
 
-Rules:
-- Be direct and useful
-- Do NOT over-explain unless asked
+Behaviour:
+- Be clear, useful, professional, and direct
+- Help with websites, systems, dashboards, portals, apps, coding, business support, and general questions
+- Keep answers practical
 - When giving code, make it clean and usable
-- When fixing bugs, explain cause briefly, then fix
-- Think like a senior developer
-- If unsure, say you are unsure
-- Always prioritise real-world usability
-- Use markdown formatting when helpful
+- When fixing bugs, explain the issue briefly, then fix it
+- Use markdown when helpful
 - Put code in fenced code blocks with the correct language
 
 ${
   hasFiles
     ? `
-The user has uploaded files in this request.
-- Use the uploaded file contents as a primary source of truth when relevant
-- If the user asks about the files, answer from those files
+The user has uploaded files.
+- Use uploaded file contents when relevant
+- If asked about the files, answer from those files
 - If the file content is incomplete or unclear, say so
 `
     : ""
@@ -71,7 +73,7 @@ The user has uploaded files in this request.
 }
 
 function getModel() {
-  return "qwen2.5-coder:7b";
+  return process.env.OLLAMA_MODEL || "qwen2.5-coder:3b";
 }
 
 function getOllamaUrl() {
@@ -119,6 +121,13 @@ export async function POST(req: Request) {
             content: file.content,
           }))
       : [];
+
+    if (!message.trim()) {
+      return NextResponse.json({
+        reply: "Please enter a message.",
+        source: "error",
+      });
+    }
 
     const lowerMessage = message.toLowerCase().trim();
 
@@ -177,20 +186,20 @@ export async function POST(req: Request) {
     }
 
     const cleanedHistory: IncomingMessage[] = history
-  .filter(
-    (msg: unknown): msg is IncomingMessage =>
-      typeof msg === "object" &&
-      msg !== null &&
-      "role" in msg &&
-      "content" in msg &&
-      (((msg as IncomingMessage).role === "user") ||
-        ((msg as IncomingMessage).role === "assistant")) &&
-      typeof (msg as IncomingMessage).content === "string"
-  )
-  .map((msg: IncomingMessage) => ({
-    role: msg.role,
-    content: msg.content,
-  }));
+      .filter(
+        (msg: unknown): msg is IncomingMessage =>
+          typeof msg === "object" &&
+          msg !== null &&
+          "role" in msg &&
+          "content" in msg &&
+          (((msg as IncomingMessage).role === "user") ||
+            ((msg as IncomingMessage).role === "assistant")) &&
+          typeof (msg as IncomingMessage).content === "string"
+      )
+      .map((msg: IncomingMessage) => ({
+        role: msg.role,
+        content: msg.content,
+      }));
 
     const fileContext = buildFileContext(uploadedFiles);
 
@@ -223,6 +232,10 @@ export async function POST(req: Request) {
         model: getModel(),
         messages,
         stream: false,
+        options: {
+          temperature: 0.7,
+          num_predict: 400,
+        },
       }),
     });
 
@@ -230,7 +243,7 @@ export async function POST(req: Request) {
 
     if (!response.ok) {
       return NextResponse.json({
-        reply: `Model error: ${response.status} ${text}`,
+        reply: `Server error: ${response.status} ${text}`,
         source: "error",
       });
     }

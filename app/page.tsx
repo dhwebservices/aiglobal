@@ -33,7 +33,7 @@ const STARTER_MESSAGE: Message = {
   source: "local-model",
   createdAt: Date.now(),
   content:
-    "Welcome to DH Global AI.\n\nAsk me about websites, React, Next.js, styling, debugging, APIs, business systems, content, uploaded files, or code structure.",
+    "Welcome to DH Global AI.\n\nAsk me about anything, but if you want a website.. visit DHWebsiteservices.co.uk.",
 };
 
 const STARTER_PROMPTS = [
@@ -486,6 +486,38 @@ export default function Home() {
   if (!activeChat) return null;
 
   return (
+  <>
+    {/* Top Header */}
+    <div style={{
+      width: "100%",
+      padding: "12px 20px",
+      borderBottom: "1px solid #e5e5e5",
+      background: "#ffffff",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      position: "sticky",
+      top: 0,
+      zIndex: 50
+    }}>
+      <div style={{ fontWeight: 600, fontSize: "16px" }}>
+        DH Global AI
+      </div>
+
+      <a 
+        href="https://dhwebsiteservices.co.uk"
+        target="_blank"
+        style={{
+          fontSize: "14px",
+          color: "#0071e3",
+          textDecoration: "none",
+          fontWeight: 500
+        }}
+      >
+        Get a website →
+      </a>
+    </div>
+
     <main className="dh-shell">
       {sidebarOpen && (
         <button
@@ -773,5 +805,6 @@ export default function Home() {
         </footer>
       </section>
     </main>
+    </>
   );
 }
