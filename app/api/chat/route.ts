@@ -10,6 +10,12 @@ type IncomingMessage = {
   content: string;
 };
 
+type UploadedFile = {
+  name: string;
+  type: string;
+  content: string;
+};
+
 function isMathExpression(input: string) {
   return /^[0-9\s+\-*/().%]+$/.test(input);
 }
@@ -31,7 +37,7 @@ function safeCalculate(expression: string) {
   }
 }
 
-function getSystemPrompt() {
+function getSystemPrompt(hasFiles: boolean) {
   return `
 You are DH GLOBAL AI, a powerful local AI assistant and senior web developer.
 
@@ -50,6 +56,17 @@ Rules:
 - Always prioritise real-world usability
 - Use markdown formatting when helpful
 - Put code in fenced code blocks with the correct language
+
+${
+  hasFiles
+    ? `
+The user has uploaded files in this request.
+- Use the uploaded file contents as a primary source of truth when relevant
+- If the user asks about the files, answer from those files
+- If the file content is incomplete or unclear, say so
+`
+    : ""
+}
 `;
 }
 
@@ -57,11 +74,51 @@ function getModel() {
   return "qwen2.5-coder:7b";
 }
 
+function getOllamaUrl() {
+  return process.env.OLLAMA_URL || "http://127.0.0.1:11434/api/chat";
+}
+
+function trimFileContent(content: string, maxLength = 12000) {
+  if (content.length <= maxLength) return content;
+  return `${content.slice(0, maxLength)}\n\n[File content truncated due to length]`;
+}
+
+function buildFileContext(files: UploadedFile[]) {
+  if (!files.length) return "";
+
+  const formatted = files
+    .map((file, index) => {
+      const safeContent = trimFileContent(file.content || "");
+      return `File ${index + 1}: ${file.name}
+Type: ${file.type || "unknown"}
+
+Content:
+${safeContent}`;
+    })
+    .join("\n\n--------------------\n\n");
+
+  return `The user uploaded these files:\n\n${formatted}`;
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const message = String(body.message || "");
     const history = Array.isArray(body.history) ? body.history : [];
+    const uploadedFiles = Array.isArray(body.uploadedFiles)
+      ? (body.uploadedFiles as UploadedFile[])
+          .filter(
+            (file) =>
+              file &&
+              typeof file.name === "string" &&
+              typeof file.content === "string"
+          )
+          .map((file) => ({
+            name: file.name,
+            type: typeof file.type === "string" ? file.type : "",
+            content: file.content,
+          }))
+      : [];
 
     const lowerMessage = message.toLowerCase().trim();
 
@@ -120,26 +177,36 @@ export async function POST(req: Request) {
     }
 
     const cleanedHistory: IncomingMessage[] = history
-      .filter(
-        (msg: unknown) =>
-          typeof msg === "object" &&
-          msg !== null &&
-          "role" in msg &&
-          "content" in msg &&
-          ((msg as IncomingMessage).role === "user" ||
-            (msg as IncomingMessage).role === "assistant") &&
-          typeof (msg as IncomingMessage).content === "string"
-      )
-      .map((msg) => ({
-        role: msg.role,
-        content: msg.content,
-      }));
+  .filter(
+    (msg: unknown): msg is IncomingMessage =>
+      typeof msg === "object" &&
+      msg !== null &&
+      "role" in msg &&
+      "content" in msg &&
+      (((msg as IncomingMessage).role === "user") ||
+        ((msg as IncomingMessage).role === "assistant")) &&
+      typeof (msg as IncomingMessage).content === "string"
+  )
+  .map((msg: IncomingMessage) => ({
+    role: msg.role,
+    content: msg.content,
+  }));
+
+    const fileContext = buildFileContext(uploadedFiles);
 
     const messages: ChatMessage[] = [
       {
         role: "system",
-        content: getSystemPrompt(),
+        content: getSystemPrompt(uploadedFiles.length > 0),
       },
+      ...(fileContext
+        ? [
+            {
+              role: "system" as const,
+              content: fileContext,
+            },
+          ]
+        : []),
       ...cleanedHistory,
       {
         role: "user",
@@ -147,7 +214,7 @@ export async function POST(req: Request) {
       },
     ];
 
-    const response = await fetch("http://127.0.0.1:11434/api/chat", {
+    const response = await fetch(getOllamaUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

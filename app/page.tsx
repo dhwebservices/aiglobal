@@ -6,6 +6,7 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   source?: "local-model" | "tool" | "error";
+  createdAt?: number;
 };
 
 type ChatSession = {
@@ -24,14 +25,15 @@ type UploadedFile = {
   size: number;
 };
 
-const STORAGE_CHATS = "dh-global-ai-chats-v4";
-const STORAGE_ACTIVE = "dh-global-ai-active-v4";
+const STORAGE_CHATS = "dh-global-ai-chats-v5";
+const STORAGE_ACTIVE = "dh-global-ai-active-v5";
 
 const STARTER_MESSAGE: Message = {
   role: "assistant",
   source: "local-model",
+  createdAt: Date.now(),
   content:
-    "Welcome to DH Global AI.\n\nAsk me about websites, React, Next.js, styling, debugging, APIs, layout improvements, code structure, or uploaded files.",
+    "Welcome to DH Global AI.\n\nAsk me about websites, React, Next.js, styling, debugging, APIs, business systems, content, uploaded files, or code structure.",
 };
 
 const STARTER_PROMPTS = [
@@ -41,28 +43,48 @@ const STARTER_PROMPTS = [
   "Create a modern pricing section with Tailwind",
 ];
 
+function makeId() {
+  if (
+    typeof globalThis !== "undefined" &&
+    globalThis.crypto &&
+    typeof globalThis.crypto.randomUUID === "function"
+  ) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
 function createNewChat(): ChatSession {
   const now = Date.now();
 
   return {
-    id: crypto.randomUUID(),
+    id: makeId(),
     title: "New chat",
     createdAt: now,
     updatedAt: now,
-    messages: [STARTER_MESSAGE],
+    messages: [{ ...STARTER_MESSAGE, createdAt: now }],
   };
 }
 
 function sourceLabel(source?: Message["source"]) {
   if (source === "tool") return "Tool";
   if (source === "error") return "Error";
-  return "DH Global AI";
+  return "David";
 }
 
-function formatTime(timestamp: number) {
+function formatChatTime(timestamp: number) {
   return new Date(timestamp).toLocaleString([], {
     month: "short",
     day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatMessageTime(timestamp?: number) {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -148,7 +170,7 @@ async function readSupportedFiles(
     const text = await file.text();
 
     uploaded.push({
-      id: crypto.randomUUID(),
+      id: makeId(),
       name: file.name,
       type: file.type || "text/plain",
       content: text,
@@ -157,6 +179,16 @@ async function readSupportedFiles(
   }
 
   return uploaded;
+}
+
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function Home() {
@@ -168,10 +200,13 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const savedChats = localStorage.getItem(STORAGE_CHATS);
@@ -189,7 +224,9 @@ export default function Home() {
           );
           return;
         }
-      } catch {}
+      } catch {
+        // ignore bad local state
+      }
     }
 
     const fresh = createNewChat();
@@ -219,9 +256,21 @@ export default function Home() {
     textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
   }, [message]);
 
+  useEffect(() => {
+    if (renamingChatId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingChatId]);
+
   const activeChat = useMemo(
     () => chats.find((chat) => chat.id === activeChatId),
     [chats, activeChatId]
+  );
+
+  const sortedChats = useMemo(
+    () => chats.slice().sort((a, b) => b.updatedAt - a.updatedAt),
+    [chats]
   );
 
   const updateActiveChat = (updater: (chat: ChatSession) => ChatSession) => {
@@ -236,10 +285,14 @@ export default function Home() {
     setActiveChatId(fresh.id);
     setMessage("");
     setUploadedFiles([]);
+    setRenamingChatId(null);
     setSidebarOpen(false);
   };
 
   const handleDeleteChat = (chatId: string) => {
+    const confirmed = window.confirm("Delete this chat?");
+    if (!confirmed) return;
+
     const nextChats = chats.filter((chat) => chat.id !== chatId);
 
     if (nextChats.length === 0) {
@@ -258,12 +311,53 @@ export default function Home() {
     }
   };
 
+  const startRenameChat = (chat: ChatSession) => {
+    setRenamingChatId(chat.id);
+    setRenameValue(chat.title);
+  };
+
+  const saveRenameChat = () => {
+    if (!renamingChatId) return;
+
+    const nextTitle = renameValue.trim() || "New chat";
+
+    setChats((prev) =>
+      prev.map((chat) =>
+        chat.id === renamingChatId ? { ...chat, title: nextTitle } : chat
+      )
+    );
+
+    setRenamingChatId(null);
+    setRenameValue("");
+  };
+
+  const exportChat = (chat: ChatSession) => {
+    const lines: string[] = [];
+    lines.push(`DH Global AI chat export`);
+    lines.push(`Title: ${chat.title}`);
+    lines.push(`Created: ${formatChatTime(chat.createdAt)}`);
+    lines.push(`Updated: ${formatChatTime(chat.updatedAt)}`);
+    lines.push("");
+
+    chat.messages.forEach((msg) => {
+      const author = msg.role === "user" ? "You" : "David";
+      lines.push(`[${author}] ${msg.createdAt ? formatChatTime(msg.createdAt) : ""}`);
+      lines.push(msg.content);
+      lines.push("");
+    });
+
+    const safeName = chat.title.replace(/[^a-z0-9-_ ]/gi, "").trim() || "chat";
+    downloadTextFile(`${safeName}.txt`, lines.join("\n"));
+  };
+
   const copyMessage = async (content: string, index: number) => {
     try {
       await navigator.clipboard.writeText(content);
       setCopiedIndex(index);
       setTimeout(() => setCopiedIndex(null), 1500);
-    } catch {}
+    } catch {
+      // ignore clipboard failures
+    }
   };
 
   const handleFilePick = async (
@@ -299,10 +393,13 @@ export default function Home() {
       content: msg.content,
     }));
 
+    const now = Date.now();
+
     const userEntry: Message = {
       role: "user",
       content: userMessage,
       source: "local-model",
+      createdAt: now,
     };
 
     updateActiveChat((chat) => {
@@ -341,6 +438,7 @@ export default function Home() {
         role: "assistant",
         content: data.reply || "No reply returned.",
         source: data.source || "local-model",
+        createdAt: Date.now(),
       };
 
       updateActiveChat((chat) => ({
@@ -352,8 +450,9 @@ export default function Home() {
     } catch {
       const assistantEntry: Message = {
         role: "assistant",
-        content: "Error talking to DH Global AI.",
+        content: "Server error: unable to reach David right now.",
         source: "error",
+        createdAt: Date.now(),
       };
 
       updateActiveChat((chat) => ({
@@ -366,6 +465,17 @@ export default function Home() {
     setLoading(false);
   };
 
+  const clearAllChats = () => {
+    const confirmed = window.confirm("Clear all chats?");
+    if (!confirmed) return;
+
+    const fresh = createNewChat();
+    setChats([fresh]);
+    setActiveChatId(fresh.id);
+    setUploadedFiles([]);
+    setMessage("");
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -376,267 +486,291 @@ export default function Home() {
   if (!activeChat) return null;
 
   return (
-    <main className="h-screen bg-[#212121] text-white flex overflow-hidden">
+    <main className="dh-shell">
       {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-30 md:hidden"
+        <button
+          type="button"
+          className="dh-mobile-overlay"
           onClick={() => setSidebarOpen(false)}
+          aria-label="Close sidebar"
         />
       )}
 
-      <aside
-        className={`fixed md:static top-0 left-0 z-40 h-full w-[300px] bg-[#171717] border-r border-white/10 flex flex-col transition-transform duration-200 ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
-        }`}
-      >
-        <div className="p-4 border-b border-white/10 space-y-4">
-          <button
-            onClick={handleNewChat}
-            className="w-full rounded-xl bg-white/10 hover:bg-white/15 transition px-4 py-3 text-left font-medium"
-          >
+      <aside className={`dh-sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="dh-sidebar-top">
+          <button onClick={handleNewChat} className="dh-new-chat-btn">
             + New chat
           </button>
 
-          <div>
-            <label className="block text-xs text-white/50 mb-1">Model</label>
-            <div className="w-full rounded-xl bg-[#2b2b2b] border border-white/10 px-3 py-2 text-sm">
-              DH GLOBAL AI
-            </div>
+          <div className="dh-model-card">
+            <span className="dh-model-label">Model</span>
+            <div className="dh-model-value">DH GLOBAL AI</div>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          {chats
-            .slice()
-            .sort((a, b) => b.updatedAt - a.updatedAt)
-            .map((chat) => {
-              const isActive = chat.id === activeChatId;
+        <div className="dh-chat-list">
+          {sortedChats.map((chat) => {
+            const isActive = chat.id === activeChatId;
+            const isRenaming = renamingChatId === chat.id;
 
-              return (
-                <div
-                  key={chat.id}
-                  className={`rounded-xl border transition ${
-                    isActive
-                      ? "bg-white/10 border-white/15"
-                      : "bg-transparent border-transparent hover:bg-white/5"
-                  }`}
-                >
-                  <button
-                    onClick={() => {
-                      setActiveChatId(chat.id);
-                      setSidebarOpen(false);
-                    }}
-                    className="w-full text-left px-3 py-3"
-                  >
-                    <div className="text-sm font-medium truncate">
-                      {chat.title}
-                    </div>
-                    <div className="text-[11px] text-white/40 mt-1">
-                      {formatTime(chat.updatedAt)}
-                    </div>
-                  </button>
-
-                  <div className="px-3 pb-3">
+            return (
+              <div
+                key={chat.id}
+                className={`dh-chat-list-item ${isActive ? "active" : ""}`}
+              >
+                <div className="dh-chat-list-main">
+                  {isRenaming ? (
+                    <input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onBlur={saveRenameChat}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveRenameChat();
+                        if (e.key === "Escape") {
+                          setRenamingChatId(null);
+                          setRenameValue("");
+                        }
+                      }}
+                      className="dh-rename-input"
+                    />
+                  ) : (
                     <button
-                      onClick={() => handleDeleteChat(chat.id)}
-                      className="text-xs text-white/45 hover:text-white transition"
+                      onClick={() => {
+                        setActiveChatId(chat.id);
+                        setSidebarOpen(false);
+                      }}
+                      className="dh-chat-open-btn"
                     >
-                      Delete
+                      <span className="dh-chat-title">{chat.title}</span>
+                      <span className="dh-chat-date">
+                        {formatChatTime(chat.updatedAt)}
+                      </span>
                     </button>
-                  </div>
+                  )}
                 </div>
-              );
-            })}
+
+                <div className="dh-chat-actions">
+                  <button
+                    onClick={() => startRenameChat(chat)}
+                    className="dh-small-action"
+                  >
+                    Rename
+                  </button>
+                  <button
+                    onClick={() => exportChat(chat)}
+                    className="dh-small-action"
+                  >
+                    Export
+                  </button>
+                  <button
+                    onClick={() => handleDeleteChat(chat.id)}
+                    className="dh-small-action danger"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        <div className="p-4 border-t border-white/10 text-sm text-white/60 space-y-1">
-          <div>DH Global AI</div>
-          <div className="text-xs text-white/35">
-            Websites, code, debugging, file analysis
+        <div className="dh-sidebar-bottom">
+          <button onClick={clearAllChats} className="dh-clear-btn">
+            Clear all chats
+          </button>
+          <div className="dh-sidebar-footnote">
+            DH Global AI
+            <br />
+            Websites, code, business systems, file analysis
           </div>
         </div>
       </aside>
 
-      <section className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 border-b border-white/10 flex items-center justify-between px-4 md:px-6">
-          <div className="flex items-center gap-3">
+      <section className="dh-main">
+        <header className="dh-topbar">
+          <div className="dh-topbar-left">
             <button
               onClick={() => setSidebarOpen(true)}
-              className="md:hidden rounded-lg border border-white/10 px-3 py-2 text-sm"
+              className="dh-menu-btn"
             >
               Menu
             </button>
 
             <div>
-              <div className="text-lg font-semibold">DH Global AI</div>
-              <div className="text-xs text-white/40">
-                Local development assistant
-              </div>
+              <div className="dh-brand-title">DH Global AI</div>
+              <div className="dh-brand-subtitle">David · AI assistant</div>
             </div>
           </div>
 
-          <div className="text-xs rounded-full border border-white/10 px-3 py-1 text-white/45">
-            DH GLOBAL AI
+          <div className="dh-status-pill">
+            <span className="dh-status-dot" />
+            Online
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+        <div className="dh-content">
+          <div className="dh-content-inner">
             {activeChat.messages.length <= 1 && (
-              <div className="mb-2">
-                <h1 className="text-4xl font-bold mb-3">DH Global AI</h1>
-                <p className="text-white/55 mb-6 max-w-3xl">
-                  Your local assistant for coding, websites, UI improvements,
-                  debugging, app structure, and uploaded file analysis.
+              <section className="dh-hero">
+                <h1>DH Global AI</h1>
+                <p>
+                  Your assistant for websites, code, layouts, business systems,
+                  content, file analysis, and technical problem solving.
                 </p>
 
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="dh-prompt-grid">
                   {STARTER_PROMPTS.map((prompt) => (
                     <button
                       key={prompt}
                       onClick={() => sendMessage(prompt)}
-                      className="rounded-2xl border border-white/10 bg-[#171717] hover:bg-white/5 text-left p-4 transition"
+                      className="dh-prompt-card"
                     >
-                      <div className="text-sm text-white/85">{prompt}</div>
+                      {prompt}
                     </button>
                   ))}
                 </div>
-              </div>
+              </section>
             )}
 
-            {activeChat.messages.map((msg, i) => (
-              <div
-                key={i}
-                className={`flex ${
-                  msg.role === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
+            <div className="dh-messages">
+              {activeChat.messages.map((msg, i) => (
                 <div
-                  className={`max-w-[92%] md:max-w-[85%] rounded-2xl px-5 py-4 shadow-sm ${
-                    msg.role === "user"
-                      ? "bg-[#2f2f2f] text-white"
-                      : "bg-[#171717] border border-white/10 text-white"
+                  key={i}
+                  className={`dh-message-row ${
+                    msg.role === "user" ? "user" : "assistant"
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-4 mb-3">
-                    <div className="text-xs uppercase tracking-wide text-white/50">
-                      {msg.role === "user" ? "You" : "DH Global AI"}
+                  <article
+                    className={`dh-message-card ${
+                      msg.role === "user" ? "user" : "assistant"
+                    }`}
+                  >
+                    <div className="dh-message-meta">
+                      <div className="dh-message-author">
+                        {msg.role === "user" ? "You" : "David"}
+                      </div>
+
+                      <div className="dh-message-meta-right">
+                        {msg.role === "assistant" && (
+                          <span className="dh-message-badge">
+                            {sourceLabel(msg.source)}
+                          </span>
+                        )}
+                        <span className="dh-message-time">
+                          {formatMessageTime(msg.createdAt)}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="dh-message-content">
+                      {renderMessageContent(msg.content)}
                     </div>
 
                     {msg.role === "assistant" && (
-                      <div className="text-[11px] rounded-full border border-white/10 px-2 py-0.5 text-white/45">
-                        {sourceLabel(msg.source)}
+                      <div className="dh-message-footer">
+                        <button
+                          onClick={() => copyMessage(msg.content, i)}
+                          className="dh-copy-btn"
+                        >
+                          {copiedIndex === i ? "Copied" : "Copy"}
+                        </button>
                       </div>
                     )}
-                  </div>
-
-                  <div>{renderMessageContent(msg.content)}</div>
-
-                  {msg.role === "assistant" && (
-                    <div className="mt-3 flex items-center gap-3">
-                      <button
-                        onClick={() => copyMessage(msg.content, i)}
-                        className="text-xs text-white/50 hover:text-white transition"
-                      >
-                        {copiedIndex === i ? "Copied" : "Copy"}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-
-            {loading && (
-              <div className="flex justify-start">
-                <div className="max-w-[92%] md:max-w-[85%] rounded-2xl px-5 py-4 bg-[#171717] border border-white/10 text-white">
-                  <div className="flex items-center justify-between gap-4 mb-3">
-                    <div className="text-xs uppercase tracking-wide text-white/50">
-                      DH Global AI
-                    </div>
-                    <div className="text-[11px] rounded-full border border-white/10 px-2 py-0.5 text-white/45">
-                      DH GLOBAL AI
-                    </div>
-                  </div>
-                  <div className="animate-pulse text-white/70">Thinking...</div>
-                </div>
-              </div>
-            )}
-
-            <div ref={bottomRef} />
-          </div>
-        </div>
-
-        <div className="border-t border-white/10 bg-[#212121]">
-          <div className="max-w-5xl mx-auto p-4">
-            <div className="mb-3 flex flex-wrap gap-2">
-              {uploadedFiles.map((file) => (
-                <div
-                  key={file.id}
-                  className="flex items-center gap-2 rounded-full border border-white/10 bg-[#171717] px-3 py-2 text-xs"
-                >
-                  <span className="max-w-[180px] truncate">{file.name}</span>
-                  <button
-                    onClick={() => removeUploadedFile(file.id)}
-                    className="text-white/50 hover:text-white"
-                  >
-                    ×
-                  </button>
+                  </article>
                 </div>
               ))}
 
-              {uploading && (
-                <div className="rounded-full border border-white/10 bg-[#171717] px-3 py-2 text-xs text-white/60">
-                  Uploading...
+              {loading && (
+                <div className="dh-message-row assistant">
+                  <article className="dh-message-card assistant">
+                    <div className="dh-message-meta">
+                      <div className="dh-message-author">David</div>
+                      <div className="dh-message-meta-right">
+                        <span className="dh-message-badge">Thinking</span>
+                      </div>
+                    </div>
+
+                    <div className="dh-thinking">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                  </article>
                 </div>
               )}
-            </div>
 
-            <div className="rounded-2xl border border-white/10 bg-[#2b2b2b] p-3">
-              <div className="flex items-end gap-3">
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="rounded-xl border border-white/10 px-4 py-2 text-sm text-white/85 hover:bg-white/5"
-                >
-                  Upload
-                </button>
-
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  onChange={handleFilePick}
-                  className="hidden"
-                />
-
-                <textarea
-                  ref={textareaRef}
-                  className="flex-1 bg-transparent outline-none text-white placeholder:text-white/40 text-[15px] resize-none max-h-48 overflow-y-auto"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Message DH Global AI..."
-                  rows={1}
-                />
-
-                <button
-                  onClick={() => sendMessage()}
-                  disabled={loading || !message.trim()}
-                  className="rounded-xl bg-white text-black px-5 py-2.5 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Send
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-xs text-white/40">
-              <div>Enter to send • Shift + Enter for new line</div>
-              <div>
-                Upload supports text/code files like .txt, .md, .js, .ts, .tsx,
-                .json, .html, .css
-              </div>
+              <div ref={bottomRef} />
             </div>
           </div>
         </div>
+
+        <footer className="dh-composer-wrap">
+          <div className="dh-composer-inner">
+            {(uploadedFiles.length > 0 || uploading) && (
+              <div className="dh-upload-list">
+                {uploadedFiles.map((file) => (
+                  <div key={file.id} className="dh-upload-chip">
+                    <span className="dh-upload-name">{file.name}</span>
+                    <button
+                      onClick={() => removeUploadedFile(file.id)}
+                      className="dh-upload-remove"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+
+                {uploading && (
+                  <div className="dh-upload-chip muted">Uploading...</div>
+                )}
+              </div>
+            )}
+
+            <div className="dh-composer">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="dh-upload-btn"
+              >
+                Upload
+              </button>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                onChange={handleFilePick}
+                className="hidden"
+              />
+
+              <textarea
+                ref={textareaRef}
+                className="dh-textarea"
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Message DH Global AI..."
+                rows={1}
+              />
+
+              <button
+                onClick={() => sendMessage()}
+                disabled={loading || !message.trim()}
+                className="dh-send-btn"
+              >
+                Send
+              </button>
+            </div>
+
+            <div className="dh-composer-help">
+              <span>Enter to send • Shift + Enter for new line</span>
+              <span>
+                Upload supports text/code files like .txt, .md, .js, .ts, .tsx,
+                .json, .html, .css
+              </span>
+            </div>
+          </div>
+        </footer>
       </section>
     </main>
   );
